@@ -1,0 +1,101 @@
+stages:
+  - setup_env
+  - build
+  - fast_deploy
+  - build_docker
+  - deploy
+  - clean_env
+
+# Setup jobs
+env_setup_job:
+  stage: setup_env
+  script:
+   - sudo docker info
+   - sudo dpkg --add-architecture i386
+   - sudo apt-get update -qq
+   - sudo apt-get install -y -qq python3 git lua5.1 libc6:i386 libz1:i386 libstdc++6:i386
+
+# Build jobs
+build_app_job:
+  stage: build
+  script:
+    - 'echo "GIT_VERSION=\"$(git rev-parse HEAD)\" ; GIT_BRANCH=\"$CI_BUILD_REF_NAME\"" >> vrp/buildinfo.lua'
+    - python3 build/lint.py
+    - python3 build/buildscript.py $CI_BUILD_REF_NAME
+    - python3 build/packAssets.py
+    - ./build/make_archives.sh
+    - rm -rf vrp_assets
+  artifacts:
+    name: "$CI_BUILD_NAME"
+    expire_in: 3 days
+    paths:
+      - artifacts.tar.gz
+      - assets.tar.gz
+
+build_docker_job:
+  stage: build_docker
+  script:
+    - cp /builddata/workerserver build/workerserver # Built by deploy-workerunit project
+    - sudo docker build -t exo-rl-mta .
+    - sudo docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+    - sudo docker tag exo-rl-mta $DOCKER_USER/exo-rl-mta:latest-$(echo $CI_BUILD_REF_NAME | tr -d /)
+    - '[ "$CI_BUILD_REF_NAME" == "master" ] && sudo docker tag exo-rl-mta $DOCKER_USER/exo-rl-mta:latest'
+    - sudo docker push $DOCKER_USER/exo-rl-mta
+    - sudo docker logout
+  except:
+    - /^bugfix\/.*$/
+
+# Deploy jobs
+deploy_job_bugfixes:
+  stage: fast_deploy
+  script:
+    - curl -F "file=@artifacts.tar.gz" -H "API_SECRET:$WORKER_API_SECRET_DEVELOP" http://censored/upload
+  environment:
+    name: development
+  only:
+    - /^bugfix\/.*$/
+
+deploy_job_develop:
+  stage: deploy
+  script:
+    - curl -F "secret=$ASSETS_UPLOAD_SECRET_KEY" -F "git_branch=$CI_BUILD_REF_NAME" -F asset_archive=@assets.tar.gz http://censored/upload/upload.php
+    - curl -F "secret=$ASSETS_UPLOAD_SECRET_KEY" -F "git_branch=$CI_BUILD_REF_NAME" -F asset_archive=@assets.tar.gz https://censored/upload.php
+    - curl http://192.168.122.20:6000/deploy/mta_develop?APISecret=$DEPLOY_API_SECRET_DEVELOP
+  environment:
+    name: development
+  only:
+    - master
+
+deploy_job_testing:
+  stage: deploy
+  script:
+    - curl http://192.168.122.20:6000/deploy/mta_testing?APISecret=$DEPLOY_API_SECRET_TESTING
+  environment:
+    name: testing
+  only:
+    - release/testing
+
+deploy_job_production:
+  stage: deploy
+  script:
+    - curl http://192.168.122.20:6000/deploy/mta_production?APISecret=$DEPLOY_API_SECRET_PRODUCTION
+  environment:
+    name: production
+  only:
+    - release/production
+
+# Cleanup jobs
+clean_env_job_docker:
+  stage: clean_env
+  script:
+    - sudo docker rmi $DOCKER_USER/exo-rl-mta:latest-$(echo $CI_BUILD_REF_NAME | tr -d /)
+    - '(IMAGES=$(sudo docker images -q -f dangling=true) && [ "$IMAGES" != "" ] && sudo docker rmi $IMAGES) || echo' # Remove dangling images
+  except:
+    - /^bugfix\/.*$/
+  when: always
+
+clear_cache:
+  stage: clean_env
+  script:
+    - sudo docker rmi $DOCKER_USER/exo-rl-mta:latest # Remove cached image
+  when: manual

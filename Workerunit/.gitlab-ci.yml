@@ -1,0 +1,31 @@
+before_script:
+  - sudo docker info
+  - sudo apt-get -t jessie-backports install -y golang-1.6 golang
+
+stages:
+  - setup_env
+  - build
+  - deploy
+
+setup_go_env_job:
+  stage: setup_env
+  script:
+    - mkdir -p $HOME/gopath
+    - export GOPATH=$HOME/gopath
+    - go get "github.com/beevik/etree" # Installing this automatically is better, but I'm an idiot
+
+build_app_job:
+  stage: build
+  script:
+    #- go get -v ./...
+    - export GOPATH=$HOME/gopath # TODO: Fix this
+    - go build -o ./workerserver *.go
+  artifacts:
+    paths:
+      - workerserver
+
+deploy_app_job:
+  stage: deploy
+  script:
+    - sudo mkdir -p /builddata
+    - sudo cp workerserver /builddata/workerserver
